@@ -1,23 +1,12 @@
 import json
-import zlib
 
 import numpy as np
-import rasterio
-from rasterio.transform import from_origin
+import pytest
 
 from pipeline.build import ATTRIBUTION, build
+from pipeline.encode import encode
 from pipeline.grid import Source
-
-
-def make_tif(path, west, north, res, arr, nodata=None):
-    with rasterio.open(path, "w", driver="GTiff", width=arr.shape[1], height=arr.shape[0], count=1,
-                       dtype="float32", crs="EPSG:4326", transform=from_origin(west, north, res, res),
-                       nodata=nodata) as d:
-        d.write(arr.astype(np.float32), 1)
-
-
-def tile(path):
-    return np.frombuffer(zlib.decompress(path.read_bytes()), np.uint8).reshape(240, 240)
+from tests.conftest import make_tif, tile
 
 
 def test_one_lit_cell_makes_one_fine_and_one_coarse_tile(tmp_path):
@@ -67,3 +56,81 @@ def test_manifest(tmp_path):
     assert m["fine"]["deg"] == 2 and m["fine"]["cells"] == 240
     assert m["coarse"]["deg"] == 10 and m["coarse"]["cells"] == 240
     assert m["attribution"] == ATTRIBUTION and "CC BY 4.0" in ATTRIBUTION
+
+
+def test_half_pixel_origin_lands_correctly(tmp_path):
+    # EOG's rasters are pixel-centred: the corner sits half a pixel off the
+    # whole degree. Construction must not raise, and align()'s floor+1 rule
+    # (take the pixel centred inside the cell, east/south of the edge)
+    # shifts the lit cell by exactly one row and one column.
+    res = 1 / 120
+    west = -122.0 - res / 2
+    north = 46.0 + res / 2
+    arr = np.zeros((240, 240), np.float32)
+    arr[10, 20] = 10.0
+    tif = tmp_path / "half.tif"
+    make_tif(tif, west, north, res, arr)
+    src = Source(str(tif))   # must not raise
+    out = tmp_path / "site"
+    m, _ = build(src, str(out), 2024, "half.tif", 50, 40, log=lambda *_: None)
+    assert m["fine"]["keys"] == ["N44W122"]
+    fine = tile(out / "fine" / "N44W122.bin")
+    assert fine[9, 19] == 113 and int(fine.sum()) == 113
+
+
+def test_misaligned_origin_raises(tmp_path):
+    res = 1 / 120
+    arr = np.zeros((10, 10), np.float32)
+    tif = tmp_path / "bad.tif"
+    make_tif(tif, -122.0 - 0.3 * res, 46.0, res, arr)
+    with pytest.raises(ValueError):
+        Source(str(tif))
+
+
+def test_band_continuity_no_duplicated_rows(tmp_path):
+    # A half-pixel origin spanning two fine bands (48..46, 46..44): under the
+    # old per-band float rounding, adjacent bands could disagree by one row
+    # (duplicating or dropping a source row at the seam). The two lit source
+    # rows here are adjacent and must each land exactly once, in the two
+    # neighbouring tiles.
+    res = 1 / 120
+    west = -122.0 - res / 2
+    north = 48.0 + res / 2
+    arr = np.zeros((480, 480), np.float32)   # ~lat 48..44, lon -122..-118
+    arr[240, 10] = 5.0   # last source row read into the 48..46 fine band
+    arr[241, 10] = 7.0   # first source row read into the 46..44 fine band
+    tif = tmp_path / "cont.tif"
+    make_tif(tif, west, north, res, arr)
+    out = tmp_path / "site"
+    m, _ = build(Source(str(tif)), str(out), 2024, "cont.tif", 50, 40, log=lambda *_: None)
+    assert sorted(m["fine"]["keys"]) == ["N44W122", "N46W122"]
+    upper = tile(out / "fine" / "N46W122.bin")
+    lower = tile(out / "fine" / "N44W122.bin")
+    e5, e7 = int(encode(5.0)), int(encode(7.0))
+    assert upper[239, 9] == e5 and int(upper.sum()) == e5
+    assert lower[0, 9] == e7 and int(lower.sum()) == e7
+
+
+def test_nan_pixels_are_dark(tmp_path):
+    arr = np.zeros((240, 240), np.float32)
+    arr[5, 5] = np.nan
+    arr[6, 6] = 8.0
+    tif = tmp_path / "nan.tif"
+    make_tif(tif, -122.0, 46.0, 1 / 120, arr)
+    out = tmp_path / "site"
+    build(Source(str(tif)), str(out), 2024, "nan.tif", 50, 40, log=lambda *_: None)
+    fine = tile(out / "fine" / "N44W122.bin")
+    assert fine[5, 5] == 0
+    assert fine[6, 6] == int(encode(8.0))
+
+
+def test_nonempty_out_dir_raises(tmp_path):
+    arr = np.zeros((240, 240), np.float32)
+    arr[0, 0] = 5.0
+    tif = tmp_path / "p.tif"
+    make_tif(tif, -122.0, 46.0, 1 / 120, arr)
+    out = tmp_path / "site"
+    out.mkdir()
+    (out / "stale.txt").write_text("leftover")
+    with pytest.raises(ValueError):
+        build(Source(str(tif)), str(out), 2024, "p.tif", 50, 40, log=lambda *_: None)

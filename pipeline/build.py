@@ -23,6 +23,9 @@ def _write(out_dir, kind, key, b):
 def build(src, out_dir, year, source_name, lat_top=80, lat_bottom=-70, log=print):
     if lat_top % COARSE_DEG or lat_bottom % COARSE_DEG or lat_top <= lat_bottom:
         raise ValueError("lat_top and lat_bottom must be multiples of 10, top above bottom")
+    if os.path.isdir(out_dir) and os.listdir(out_dir):
+        raise ValueError(f"{out_dir} already has files in it — delete it or pick a different --out; "
+                          "a rerun must never publish last year's leftover tiles")
     native_per_fine = src.per_deg * FINE_DEG // CELLS          # 2 for EOG's 15″ grid
     if native_per_fine < 1 or native_per_fine * CELLS != src.per_deg * FINE_DEG:
         raise ValueError(f"{src.per_deg} px/deg does not divide into {CELLS} cells per {FINE_DEG}°")
