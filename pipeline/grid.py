@@ -68,8 +68,11 @@ class Source:
         # floats per band: a fraction near k + 0.5 can round to k or k + 1
         # inconsistently across bands, duplicating or dropping a source row
         # at the seam between two bands.
-        col_x = (-180.0 - self.west) / self.res
-        row_x = (self.north - 90.0) / self.res
+        # In EXACT pixels (x per_deg), not / self.res: EOG's header rounds the
+        # pixel size to 10 digits (0.0041666667 for 1/240), which drifts
+        # 2.9e-5 px over the 3,600 rows from its 75N edge up to lat 90.
+        col_x = (-180.0 - self.west) * self.per_deg
+        row_x = (self.north - 90.0) * self.per_deg
         self.col180_frac = col_x - math.floor(col_x)
         self.row90_frac = row_x - math.floor(row_x)
         self.col180 = align(col_x, "lon -180")
