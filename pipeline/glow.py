@@ -3,9 +3,15 @@
 # one-byte encoding the map's "Dark sky" layer decodes. Change the constants
 # with skyglow.js (SKYGLOW_C, kernel, KM_LAT/KM_LON, 300 km cut) and the
 # manifest's "glow.encoding" block together.
+import json
 import math
+import os
+import zlib
 
 import numpy as np
+
+from .encode import decode, pack
+from .grid import CELLS, COARSE_DEG, FINE_DEG, FINE_PER_COARSE, block_mean, tile_key
 
 GLOW_SCALE = 40.0
 GLOW_R0 = 0.002
@@ -86,3 +92,79 @@ def glow_band(fine_radiance_rows, top_lat, cell_deg, margin_rows):
     out = SKYGLOW_C * conv[margin_rows:margin_rows + band_rows]
     out[out < 1e-12 * max(float(out.max()), 1e-300)] = 0.0  # FFT round-off, not light
     return out
+
+
+def _read_fine_band(out_dir, keys, ftop, width):
+    """Decoded radiance (CELLS x width) of the published fine tiles in the 2°
+    band whose top edge is ftop; an unlisted tile is dark."""
+    band = np.zeros((CELLS, width))
+    lat = ftop - FINE_DEG
+    for i in range(360 // FINE_DEG):
+        key = tile_key(lat, -180 + i * FINE_DEG)
+        if key not in keys:
+            continue
+        with open(os.path.join(out_dir, "fine", f"{key}.bin"), "rb") as f:
+            b = np.frombuffer(zlib.decompress(f.read()), np.uint8).reshape(CELLS, CELLS)
+        band[:, i * CELLS:(i + 1) * CELLS] = decode(b)
+    return band
+
+
+def _write_glow(out_dir, kind, key, b):
+    with open(os.path.join(out_dir, "glow", kind, f"{key}.bin"), "wb") as f:
+        f.write(pack(b))
+
+
+def build_glow(out_dir, lat_top=80, lat_bottom=-70, log=print):
+    """Glow tiles from the build's OWN published fine tiles (the quantised
+    bytes the app's 3D sky reads), one 2° band at a time. Writes
+    out_dir/glow/fine and glow/coarse (a tile only if some cell is brighter
+    than Bortle class 1) and returns the manifest's "glow" block."""
+    if lat_top % COARSE_DEG or lat_bottom % COARSE_DEG or lat_top <= lat_bottom:
+        raise ValueError("lat_top and lat_bottom must be multiples of 10, top above bottom")
+    if os.path.exists(os.path.join(out_dir, "glow")):
+        raise ValueError(f"{out_dir}/glow already exists — remove it first; a rerun must never keep stale tiles")
+    with open(os.path.join(out_dir, "manifest.json")) as f:
+        keys = set(json.load(f)["fine"]["keys"])
+    os.makedirs(os.path.join(out_dir, "glow", "fine"))
+    os.makedirs(os.path.join(out_dir, "glow", "coarse"))
+    width = 360 * CELLS // FINE_DEG
+    cell_deg = FINE_DEG / CELLS
+    margin = math.ceil(FAR_KM / (cell_deg * KM_LAT))
+    reach = math.ceil(margin / CELLS)                       # fine bands the margin spans
+    cache = {}
+
+    def band(ftop):
+        if ftop not in cache:
+            cache[ftop] = _read_fine_band(out_dir, keys, ftop, width)
+        return cache[ftop]
+
+    fine_keys, coarse_keys = [], []
+    for ctop in range(lat_top, lat_bottom, -COARSE_DEG):
+        rs = []
+        for ftop in range(ctop, ctop - COARSE_DEG, -FINE_DEG):
+            rows = np.vstack([band(ftop + FINE_DEG * j) for j in range(reach, -reach - 1, -1)])
+            a0 = reach * CELLS - margin
+            r = glow_band(rows[a0:a0 + CELLS + 2 * margin], ftop, cell_deg, margin)
+            del rows
+            for old in [t for t in cache if t > ftop + FINE_DEG * reach - FINE_DEG]:
+                del cache[old]
+            for i in range(360 // FINE_DEG):
+                cell = r[:, i * CELLS:(i + 1) * CELLS]
+                if (cell > CLASS1_R).any():
+                    key = tile_key(ftop - FINE_DEG, -180 + i * FINE_DEG)
+                    _write_glow(out_dir, "fine", key, encode_glow(cell))
+                    fine_keys.append(key)
+            rs.append(block_mean(r, FINE_PER_COARSE))       # mean r of the 5x5 fine cells
+        coarse = np.vstack(rs)
+        for j in range(360 // COARSE_DEG):
+            cell = coarse[:, j * CELLS:(j + 1) * CELLS]
+            if (cell > CLASS1_R).any():
+                key = tile_key(ctop - COARSE_DEG, -180 + j * COARSE_DEG)
+                _write_glow(out_dir, "coarse", key, encode_glow(cell))
+                coarse_keys.append(key)
+        log(f"glow {ctop:>4}..{ctop - COARSE_DEG:<4} {len(fine_keys):>6} fine {len(coarse_keys):>5} coarse")
+    return {
+        "encoding": {"scale": GLOW_SCALE, "r0": GLOW_R0},
+        "fine": {"deg": FINE_DEG, "cells": CELLS, "keys": sorted(fine_keys)},
+        "coarse": {"deg": COARSE_DEG, "cells": CELLS, "keys": sorted(coarse_keys)},
+    }

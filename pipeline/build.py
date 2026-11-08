@@ -7,6 +7,7 @@ import os
 import numpy as np
 
 from .encode import R0, SCALE, encode, pack
+from .glow import build_glow
 from .grid import CELLS, COARSE_DEG, FINE_DEG, FINE_PER_COARSE, block_mean, tile_key
 
 ATTRIBUTION = ("Night lights: Earth Observation Group, Payne Institute for Public Policy "
@@ -20,7 +21,7 @@ def _write(out_dir, kind, key, b):
     return os.path.getsize(path)
 
 
-def build(src, out_dir, year, source_name, lat_top=80, lat_bottom=-70, log=print):
+def build(src, out_dir, year, source_name, lat_top=80, lat_bottom=-70, log=print, glow=False):
     if lat_top % COARSE_DEG or lat_bottom % COARSE_DEG or lat_top <= lat_bottom:
         raise ValueError("lat_top and lat_bottom must be multiples of 10, top above bottom")
     if os.path.isdir(out_dir) and os.listdir(out_dir):
@@ -68,4 +69,8 @@ def build(src, out_dir, year, source_name, lat_top=80, lat_bottom=-70, log=print
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, separators=(",", ":"))
+    if glow:   # reads the fine tiles just written, so the map matches the 3D sky
+        manifest["glow"] = build_glow(out_dir, lat_top, lat_bottom, log)
+        with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+            json.dump(manifest, f, separators=(",", ":"))
     return manifest, nbytes
