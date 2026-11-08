@@ -17,6 +17,7 @@ import sys
 
 from pipeline.build import build
 from pipeline.glow import build_glow
+from pipeline.manifest import write_manifest
 from pipeline.grid import Source
 from pipeline.verify import check_site, http_reader, local_reader
 
@@ -48,8 +49,7 @@ def glow_only(path, lat_top, lat_bottom):
     except ValueError as e:
         print(e)
         return 1
-    with open(mpath, "w") as f:
-        json.dump(manifest, f, separators=(",", ":"))
+    write_manifest(path, manifest)
     full = lat_top == 80 and lat_bottom == -70
     fails = check_site(local_reader(path), full_world=full, lat_top=lat_top, lat_bottom=lat_bottom,
                        require_glow=True)

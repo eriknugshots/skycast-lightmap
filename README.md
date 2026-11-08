@@ -45,7 +45,7 @@ Glow tiles (the map's "Dark sky" layer): `glow/fine/<key>.bin` and
 r/0.002)) where r is the added-light ratio glowAt computes (`pipeline/glow.py`).
 They are computed from the build's own published fine tiles, so the map agrees
 with the 3D sky; a tile is listed only if some cell is brighter than Bortle
-class 1. `run_build.py` writes them with every build; to add them to an
+class 1. A coarse glow cell is the MEAN r of its fine cells, so a coarse tile can be unlisted while a fine tile inside it is listed (class 1/2 edge). `run_build.py` writes them with every build; to add them to an
 existing build (run on a COPY of `site/`, never `site/` itself):
 
     cp -R site build-glow && .venv/bin/python run_build.py --glow-only build-glow

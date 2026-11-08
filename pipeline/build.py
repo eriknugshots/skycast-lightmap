@@ -1,13 +1,13 @@
 # pipeline/build.py — the whole world in 2° latitude bands: each band's fine
 # tiles as it is read, and a 10° band's coarse tiles once its five fine bands
 # are in. Only tiles with a lit cell are written; the manifest lists them.
-import json
 import os
 
 import numpy as np
 
 from .encode import R0, SCALE, encode, pack
 from .glow import build_glow
+from .manifest import write_manifest
 from .grid import CELLS, COARSE_DEG, FINE_DEG, FINE_PER_COARSE, block_mean, tile_key
 
 ATTRIBUTION = ("Night lights: Earth Observation Group, Payne Institute for Public Policy "
@@ -67,10 +67,8 @@ def build(src, out_dir, year, source_name, lat_top=80, lat_bottom=-70, log=print
         "coarse": {"deg": COARSE_DEG, "cells": CELLS, "keys": sorted(coarse_keys)},
         "attribution": ATTRIBUTION,
     }
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f, separators=(",", ":"))
+    write_manifest(out_dir, manifest)
     if glow:   # reads the fine tiles just written, so the map matches the 3D sky
         manifest["glow"] = build_glow(out_dir, lat_top, lat_bottom, log)
-        with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-            json.dump(manifest, f, separators=(",", ":"))
+        write_manifest(out_dir, manifest)
     return manifest, nbytes
